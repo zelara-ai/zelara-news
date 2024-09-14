@@ -1,14 +1,16 @@
-import requests
-from bs4 import BeautifulSoup
+import aiohttp
+import asyncio
 import re
+from bs4 import BeautifulSoup
+from urllib.parse import urljoin
 
 # Fetch HTML content from a URL
-def fetch_html(url):
+async def fetch_html(url):
     try:
-        response = requests.get(url)
-        response.raise_for_status()  # Raise HTTP errors if occurred
-        return response.text
-    except requests.RequestException as e:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(url) as response:
+                return await response.text()
+    except aiohttp.ClientError as e:
         print(f"Error fetching {url}: {e}")
         return None
 
@@ -21,40 +23,49 @@ def extract_article_text(html, num_paragraphs=2):
 
 # Generate an article summary by condensing the first few paragraphs
 def summarize_article(text, limit=300):
-    # Simple summary by truncating the text to the specified character limit
     if len(text) > limit:
         return text[:limit].rsplit(' ', 1)[0] + '...'  # Truncate the text at the last complete word
     return text
 
 # Parse the HTML content and extract articles with plant-related keywords
-def parse_news(html, url):
+async def parse_news(html, base_url):
     soup = BeautifulSoup(html, 'html.parser')
     articles = []
+    
+    # Find all <a> tags with href attributes
+    links = soup.find_all('a', href=True)
 
-    # Look for article tags and extract relevant news headers and links
-    for tag in soup.find_all('a', href=True):
+    # Prepare a list to hold URLs and headers for later processing
+    tasks = []
+    headers = []
+
+    for tag in links:
         header = tag.get_text(strip=True)
         link = tag['href']
         
-        # Only consider valid URLs and filter by plant-related keywords
+        # Check if the header contains plant-related keywords
         if re.search(r'plant|botany|green|nature', header, re.IGNORECASE):
-            if not link.startswith('http'):
-                link = url + link  # Handle relative URLs
-            
-            # Fetch the article content
-            article_html = fetch_html(link)
-            if article_html:
-                article_text = extract_article_text(article_html)  # Get the first two paragraphs
-                if article_text:
-                    summary = summarize_article(article_text)  # Generate a human-readable summary
-                    articles.append({
-                        "title": header,
-                        "summary": summary,
-                        "link": link
-                    })
+            # Convert relative URLs to absolute URLs
+            full_url = urljoin(base_url, link)
+            headers.append(header)
+            tasks.append(fetch_html(full_url))
     
-    return articles
+    # Gather results from all fetch tasks
+    results = await asyncio.gather(*tasks)
+    
+    # Process the fetched articles and generate summaries
+    for result, header, link in zip(results, headers, [urljoin(base_url, tag['href']) for tag in links if re.search(r'plant|botany|green|nature', tag.get_text(strip=True), re.IGNORECASE)]):
+        if result:
+            article_text = extract_article_text(result)
+            if article_text:
+                summary = summarize_article(article_text)
+                articles.append({
+                    "title": header,
+                    "summary": summary,
+                    "link": link
+                })
 
+    return articles
 
 # List of news websites to scrape
 NEWS_SITES = [
@@ -63,14 +74,25 @@ NEWS_SITES = [
     'https://www.sciencenews.org/topic/plants'
 ]
 
-# Function to scrape news from multiple websites
-def scrape_news():
+# Asynchronous function to scrape news from multiple websites
+async def scrape_news():
     all_articles = []
-    for site in NEWS_SITES:
-        print(f"Scraping {site}...")
-        html = fetch_html(site)
+    
+    # Define the tasks for concurrent fetching of multiple websites
+    tasks = [fetch_html(site) for site in NEWS_SITES]
+    
+    # Gather all tasks (fetch HTML concurrently)
+    results = await asyncio.gather(*tasks)
+    
+    # Process the HTML content and parse articles for each site
+    for i, html in enumerate(results):
         if html:
-            articles = parse_news(html, site)
+            articles = await parse_news(html, NEWS_SITES[i])
             all_articles.extend(articles)
     
     return all_articles
+
+# To call the async scrape_news function from a non-async context
+def get_news_for_client():
+    return asyncio.run(scrape_news())
+

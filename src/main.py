@@ -1,5 +1,5 @@
 from fastapi import FastAPI, HTTPException
-from src.lib.fetch import scrape_news
+from lib.fetch import get_news_for_client
 
 app = FastAPI()
 
@@ -9,7 +9,7 @@ def read_root():
 
 @app.get("/api/news")
 def get_news():
-    articles = scrape_news()
+    articles = get_news_for_client()
     if not articles:
         raise HTTPException(status_code=404, detail="No articles found")
     return {"articles": articles}
